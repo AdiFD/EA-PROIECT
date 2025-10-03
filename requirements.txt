@@ -1,0 +1,4 @@
+opencv-python==4.8.1.78
+numpy==1.24.3
+adafruit-circuitpython-servokit==1.3.13
+paho-mqtt==1.6.1
