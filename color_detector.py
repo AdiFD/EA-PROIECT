@@ -23,7 +23,7 @@ colors = {
 
 cap = cv2.VideoCapture(0)
 
-def move_servo(color):
+def move_servo(color):                          #ziua 1:imi pierd mintile
     kit.servo[servo_map[color]].angle = 90
     time.sleep(0.5)
     kit.servo[servo_map[color]].angle = 0
