@@ -53,6 +53,8 @@ DEBUG_SHOW = True
 SERVO_CHANNEL = 0              # canalul PCA9685 folosit
 NEUTRAL_ANGLE = 90
 MOVE_DELAY = 0.25              # secunde, așteaptă după comanda servo
+RESET_AFTER_MOVE = True        # dacă True, revenim la NEUTRAL_ANGLE după RESET_DELAY
+RESET_DELAY = 2.0             # secunde după care revenim la neutral (dacă RESET_AFTER_MOVE)
 
 # Mapare color+shape -> angle (adaptează la nevoile tale)
 # ACTION_MAP maps (color, shape) -> (servo_channel, angle)
@@ -228,6 +230,8 @@ def main():
 
     # initialize servo controller and ensure all mapped channels are set to neutral
     servo = ServoController(used_channels=SERVOS_USED)
+    # pending resets: channel -> reset_timestamp
+    pending_resets = {}
     
     # MQTT setup
     try:
@@ -280,6 +284,9 @@ def main():
                     print(f"Executing action: {action}")
                     # move the servo channel for this action
                     servo.move(action['channel'], action['angle'])
+                    # schedule reset to neutral if configured
+                    if RESET_AFTER_MOVE:
+                        pending_resets[action['channel']] = time.time() + RESET_DELAY
                     time.sleep(MOVE_DELAY)
                     # publish MQTT (if available)
                     if mqtt_client is not None:
@@ -310,6 +317,17 @@ def main():
                 cv2.imshow('pi_servo_control', vis)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
+
+            # handle pending resets (non-blocking)
+            if RESET_AFTER_MOVE and pending_resets:
+                now = time.time()
+                to_reset = [ch for ch, t in pending_resets.items() if now >= t]
+                for ch in to_reset:
+                    try:
+                        servo.move(ch, NEUTRAL_ANGLE)
+                    except Exception as e:
+                        print('Failed to reset servo ch', ch, e)
+                    pending_resets.pop(ch, None)
 
     finally:
         # cleanup
