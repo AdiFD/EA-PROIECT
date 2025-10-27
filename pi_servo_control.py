@@ -226,7 +226,8 @@ def main():
         use_picam2 = False
         print('Using OpenCV VideoCapture')
 
-    servo = ServoController()
+    # initialize servo controller and ensure all mapped channels are set to neutral
+    servo = ServoController(used_channels=SERVOS_USED)
     
     # MQTT setup
     try:
