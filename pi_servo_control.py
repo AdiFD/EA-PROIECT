@@ -65,8 +65,8 @@ MOVE_DELAY = 0.25              # secunde, așteaptă după comanda servo
 ACTION_MAP = {
     ('green', 'square'): (0, 180),
     ('yellow', 'square'): (1, 180),
-    ('green', 'triangle'): (2, -180),
-    ('yellow', 'triangle'): (3, -180),
+    ('green', 'triangle'): (0, 0),
+    ('yellow', 'triangle'): (1, 0),
     # fallback / optional mappings
     ('green', 'circle'): (0, 90),
     ('yellow', 'circle'): (1, 90),
