@@ -69,9 +69,6 @@ ACTION_MAP = {
     ('yellow', 'square'): (1, 180),
     ('green', 'triangle'): (0, 0),
     ('yellow', 'triangle'): (1, 0),
-    # fallback / optional mappings
-    ('green', 'circle'): (0, 90),
-    ('yellow', 'circle'): (1, 90),
 }
 
 # set of servo channels used by mapping (used for cleanup)
@@ -157,38 +154,61 @@ class ServoController:
                     pass
 
 
-def detect_shapes_and_colors(frame):
-    """Returneaza lista de detectii: fiecare element este dict cu cheile:
-       color (green|yellow), shape (triangle/square/rectangle/circle/polygon), area, center, cnt
+def recognize_colors(frame):
+    """
+    STEP 2: Recognize colors (green and yellow)
+    Returns: dict with color masks {'green': mask, 'yellow': mask}
     """
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    masks = {
-        'green': cv2.inRange(hsv, GREEN_LOWER, GREEN_UPPER),
-        'yellow': cv2.inRange(hsv, YELLOW_LOWER, YELLOW_UPPER)
-    }
+    
+    # Create color masks
+    green_mask = cv2.inRange(hsv, GREEN_LOWER, GREEN_UPPER)
+    yellow_mask = cv2.inRange(hsv, YELLOW_LOWER, YELLOW_UPPER)
+    
+    # Clean masks with morphology
+    green_mask = cv2.morphologyEx(green_mask, cv2.MORPH_OPEN, KERNEL, iterations=1)
+    green_mask = cv2.morphologyEx(green_mask, cv2.MORPH_CLOSE, KERNEL, iterations=1)
+    
+    yellow_mask = cv2.morphologyEx(yellow_mask, cv2.MORPH_OPEN, KERNEL, iterations=1)
+    yellow_mask = cv2.morphologyEx(yellow_mask, cv2.MORPH_CLOSE, KERNEL, iterations=1)
+    
+    return {'green': green_mask, 'yellow': yellow_mask}
+
+
+def recognize_shapes(color_masks):
+    """
+    STEP 3: Recognize shapes (triangle and square) from color masks
+    Returns: list of detections with color, shape, area, center, contour
+    """
     results = []
-    for color_name, mask in masks.items():
-        # morfologie
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, KERNEL, iterations=1)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, KERNEL, iterations=1)
+    
+    for color_name, mask in color_masks.items():
+        # Find contours in the color mask
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
         for cnt in contours:
             area = cv2.contourArea(cnt)
             if area < MIN_AREA:
                 continue
+            
+            # Detect shape
             perim = cv2.arcLength(cnt, True)
             approx = cv2.approxPolyDP(cnt, 0.04 * perim, True)
-            shape = f'unghiuri:{len(approx)}'
+            shape = None
+            
             if len(approx) == 3:
                 shape = 'triangle'
             elif len(approx) == 4:
                 x, y, w, h = cv2.boundingRect(approx)
                 ar = w / float(h) if h != 0 else 0
-                shape = 'square' if 0.9 <= ar <= 1.1 else 'rectangle'
-            else:
-                circularity = 4 * math.pi * area / (perim * perim + 1e-6)
-                shape = 'circle' if circularity > 0.7 else 'polygon'
+                if 0.9 <= ar <= 1.1:  # Only accept squares, skip rectangles
+                    shape = 'square'
+            
+            # Only process triangle and square shapes
+            if shape is None:
+                continue
 
+            # Calculate center point
             M = cv2.moments(cnt)
             cx = int(M['m10'] / M['m00']) if M['m00'] != 0 else 0
             cy = int(M['m01'] / M['m00']) if M['m00'] != 0 else 0
@@ -200,6 +220,7 @@ def detect_shapes_and_colors(frame):
                 'center': (cx, cy),
                 'cnt': cnt
             })
+    
     return results
 
 
@@ -210,23 +231,41 @@ def choose_best_detection(detections):
     return max(detections, key=lambda d: d['area'])
 
 
-def main():
-    # Initialize camera
+def start_camera():
+    """
+    STEP 1: Start Pi Camera
+    Returns: (camera_object, use_picam2_flag)
+    """
     if PICAMERA2_AVAILABLE:
         picam2 = Picamera2()
         config = picam2.create_preview_configuration({"main": {"size": CAMERA_SIZE}})
         picam2.configure(config)
-        picam2.start()
+        picam2.start()  # Camera activated here
         time.sleep(0.4)
-        use_picam2 = True
-        print('Using Picamera2')
+        print('STEP 1: Pi Camera started (Picamera2)')
+        return picam2, True
     else:
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
             print('Error: no camera available')
-            return
-        use_picam2 = False
-        print('Using OpenCV VideoCapture')
+            return None, False
+        print('STEP 1: Camera started (OpenCV VideoCapture)')
+        return cap, False
+
+
+def action_servo(servo_controller, color, shape, channel, angle):
+    """
+    STEP 4: Action servo motors based on color and shape
+    """
+    print(f"STEP 4: Moving servo ch{channel} to angle {angle} for {color} {shape}")
+    servo_controller.move(channel, angle)
+
+
+def main():
+    # STEP 1: Start Pi Camera
+    camera, use_picam2 = start_camera()
+    if camera is None:
+        return
 
     # initialize servo controller and ensure all mapped channels are set to neutral
     servo = ServoController(used_channels=SERVOS_USED)
@@ -249,15 +288,20 @@ def main():
 
     try:
         while True:
+            # Capture frame from camera
             if use_picam2:
-                frame = picam2.capture_array('main')
+                frame = camera.capture_array('main')
             else:
-                ret, frame = cap.read()
+                ret, frame = camera.read()
                 if not ret:
                     print('Failed to read frame')
                     break
 
-            detections = detect_shapes_and_colors(frame)
+            # STEP 2: Recognize colors
+            color_masks = recognize_colors(frame)
+            
+            # STEP 3: Recognize shapes
+            detections = recognize_shapes(color_masks)
             best = choose_best_detection(detections)
 
             action = None
@@ -281,9 +325,8 @@ def main():
             if stable_frame_count >= STABLE_FRAMES_REQUIRED:
                 # comanda servo daca actiunea e diferita de ultima executata
                 if last_action is None or action.get('channel') != last_action.get('channel') or action['angle'] != last_action.get('angle'):
-                    print(f"Executing action: {action}")
-                    # move the servo channel for this action
-                    servo.move(action['channel'], action['angle'])
+                    # STEP 4: Action servo motors
+                    action_servo(servo, action['color'], action['shape'], action['channel'], action['angle'])
                     # schedule reset to neutral if configured
                     if RESET_AFTER_MOVE:
                         pending_resets[action['channel']] = time.time() + RESET_DELAY
@@ -341,14 +384,14 @@ def main():
                 mqtt_client.disconnect()
         except Exception:
             pass
-        if PICAMERA2_AVAILABLE:
+        if use_picam2:
             try:
-                picam2.stop()
+                camera.stop()
             except Exception:
                 pass
         else:
             try:
-                cap.release()
+                camera.release()
             except Exception:
                 pass
         cv2.destroyAllWindows()
